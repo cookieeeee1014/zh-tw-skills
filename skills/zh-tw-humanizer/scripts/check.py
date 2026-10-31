@@ -48,6 +48,7 @@ MOE = load_moe()
 # 長詞優先，避免「點滴」先吃掉「點滴瓶」這類情況
 MOE_SORTED = sorted(MOE, key=len, reverse=True)
 
+
 # ── L1：大陸用詞 ────────────────────────────────────────────────
 # A 級：台灣與香港都不這樣說，一票否決
 VOCAB_A = {
@@ -88,8 +89,9 @@ VOCAB_B = {
 
 # ── L2：大陸構詞法 ──────────────────────────────────────────────
 GRAMMAR_PATTERNS = [
-    (r"進行[討分研調論析究查][究]?", "「進行」+動詞，直接用動詞"),
-    (r"作出(決定|判斷|回應|說明|選擇)", "「作出」+名詞，直接用動詞"),
+    (r"進行(?:討論|分析|研究|調查|說明|評估|處理|操作|管理|執行|溝通|確認|審查|測試)",
+     "「進行」+動詞，直接用動詞"),
+    (r"作出(?:決定|判斷|回應|說明|選擇|調整|修正)", "「作出」+名詞，直接用動詞"),
     (r"對於[^。，,]{1,12}而言", "英文直譯，改「對…來說」"),
     (r"在[^。，,]{1,12}方面(上|來説)", "英文直譯，改「…的部分」"),
     (r"通過[^。，,]{1,15}來", "「通過…來」，改「用…」"),
@@ -288,25 +290,20 @@ def scan(text):
                 })
 
         # 教育部官方對照表（跳過已由 A/B 級表處理的詞，避免重複回報）
+        # 單字詞（如「米」、「埠」）不做檢測：中文沒有詞邊界，「米飯」的「米」
+        # 和「3000 米」的「米」在字串層面分不出來，誤報的代價大於收益。
+        # 這 11 個字列在 SKILL.md，由人自己看上下文。
         for cn in MOE_SORTED:
+            if len(cn) == 1:
+                continue
             if cn in VOCAB_A or cn in VOCAB_B:
                 continue
             start = 0
             while (idx := line.find(cn, start)) != -1:
-                if len(cn) == 1:
-                    # 單字歧義太重（「米」可能是長度也可能是米飯），只提示不判定
-                    findings.append({
-                        "line": lineno, "column": idx + 1,
-                        "group": "大陸用詞（單字，需人工判斷）",
-                        "kind": "單字待確認",
-                        "found": cn,
-                        "suggest": f"若指 {MOE[cn]} 才改；若是其他意思（如米飯）則不動",
-                    })
-                else:
-                    findings.append({
-                        "line": lineno, "column": idx + 1, "group": "大陸用詞（官方對照）",
-                        "kind": "官方對照", "found": cn, "suggest": MOE[cn],
-                    })
+                findings.append({
+                    "line": lineno, "column": idx + 1, "group": "大陸用詞（官方對照）",
+                    "kind": "官方對照", "found": cn, "suggest": MOE[cn],
+                })
                 start = idx + len(cn)
 
     findings.sort(key=lambda f: (f["line"], f["column"]))
@@ -330,11 +327,92 @@ def metrics(text):
     }
 
 
+def build_prompt(text, findings, m):
+    """把檢測結果與改寫規則組成一份可直接餵給模型的請求。"""
+    def bucket(pred):
+        return [f for f in findings if pred(f)]
+
+    region_a = bucket(lambda f: f["kind"].startswith("A 級"))
+    region_b = bucket(lambda f: f["kind"].startswith("B 級"))
+    region_moe = bucket(lambda f: f["kind"] == "官方對照")
+    grammar = bucket(lambda f: f["group"] == "大陸構詞")
+    ai_tone = bucket(lambda f: f["group"] == "AI 腔")
+
+    def fmt(items):
+        return "\n".join(
+            f"- 第 {f['line']} 行第 {f['column']} 字：「{f['found']}」→ {f['suggest']}"
+            for f in items
+        )
+
+    parts = [
+        "# 繁體中文改寫請求",
+        "",
+        "改寫下面這段文本，讓它讀起來像台灣人寫的，而且不像機器寫的。",
+        "保留所有事實、數字、專有名詞。不要新增原文沒有的資訊。",
+        "",
+        "## 原文",
+        "",
+        "```",
+        text.rstrip(),
+        "```",
+        "",
+        "## 檢測結果",
+        "",
+        f"- 字數 {m['char_count']}",
+        f"- 句長節奏 {m['rhythm']}（{m['rhythm_verdict']}；低於 0.35 偏平滑，高於 0.5 較自然）",
+        f"- 抽象詞 {m['abstract_per_kilo']}/千字",
+        f"- 高級同義詞 {m['stiff_per_kilo']}/千字",
+        "",
+    ]
+
+    if region_a:
+        parts += ["### 第一優先：A 級大陸用詞（必須全部改掉）", "", fmt(region_a), ""]
+    if region_moe:
+        parts += ["### 第一優先：官方對照的大陸用詞", "", fmt(region_moe), ""]
+    if region_b:
+        parts += ["### B 級用詞（多數該改，專業語境可留）", "", fmt(region_b), ""]
+    if grammar:
+        parts += ["### 大陸構詞法", "", fmt(grammar), ""]
+    if ai_tone:
+        parts += ["### AI 腔", "", fmt(ai_tone), ""]
+    parts += [
+        "## 改寫規則",
+        "",
+        "照這個順序做，不要顛倒：",
+        "",
+        "1. **先清地區用詞。** 上面 A 級與官方對照的每一條都要改。這一層沒清掉，後面改得再好都白費。",
+        "2. **再刪。** 刪掉空洞收尾、假深刻開場、假謙虛、無出處的權威。"
+        "標準是每一句都要說出一件具體的事，說不出來的整句刪除，不要改寫。",
+        "3. **具體化。** 抽象名詞後面必須跟數字或例子（「提升效率」→「從 40 分鐘縮到 5 分鐘」）。跟不出來的，刪掉那句話。",
+        "4. **最後調節奏。** 長句（25 字以上）後面接一句短的（10 字以內），全文至少 3 處。"
+        "讀出聲，如果每句都一樣長就再改。",
+        "",
+        "## 不要動的地方",
+        "",
+        "- 引號、書名號、專有名詞內部的字",
+        "- 技術文件、法律文件、操作步驟裡的「首先」「其次」（那是正確結構）",
+        "- 物理語境的「質量」",
+        "- 具體、不尋常的細節（真實地址、奇怪引述、具體數字）",
+        "- 混合情緒、未解決的張力、真誠的旁白",
+        "- 作者自己的限制詞（或許、通常、在我看來）——這些是人寫作的痕跡",
+        "",
+        "## 輸出",
+        "",
+        "1. 改寫後的全文",
+        "2. 變更清單：按上面四類說明改了什麼、為什麼",
+        "",
+        "不要逐句對照，讀者要結果不要過程。",
+    ]
+
+    return "\n".join(parts)
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(description="繁體中文 AI 腔調檢查器")
     p.add_argument("path", nargs="?", help="要檢查的檔案")
     p.add_argument("--stdin", action="store_true")
     p.add_argument("--json", action="store_true")
+    p.add_argument("--prompt", action="store_true", help="輸出一份可直接餵給模型的改寫請求")
     p.add_argument("--quiet", action="store_true", help="只印體檢報告，不列逐項")
     args = p.parse_args(argv)
 
@@ -350,11 +428,14 @@ def main(argv=None):
     a_count = sum(1 for f in findings if f["kind"].startswith("A 級"))
     b_count = sum(1 for f in findings if f["kind"].startswith("B 級"))
     moe_count = sum(1 for f in findings if f["kind"] == "官方對照")
-    single_count = sum(1 for f in findings if f["kind"] == "單字待確認")
     gram = sum(1 for f in findings if f["group"] == "大陸構詞")
     ai_count = sum(1 for f in findings if f["group"] == "AI 腔")
 
     blocking = a_count + moe_count
+
+    if args.prompt:
+        print(build_prompt(text, findings, m))
+        return 1 if (blocking or ai_count > 3) else 0
 
     if args.json:
         print(json.dumps({
@@ -362,7 +443,7 @@ def main(argv=None):
             "summary": {
                 "total": len(findings),
                 "region_a": a_count, "region_b": b_count,
-                "region_moe": moe_count, "region_single": single_count,
+                "region_moe": moe_count,
                 "grammar": gram, "ai_tone": ai_count,
                 "moe_table_size": len(MOE),
             },
@@ -379,8 +460,6 @@ def main(argv=None):
     print()
     print("=== 判定 ===")
     print(f"  大陸用詞   A 級 {a_count}（一票否決）、B 級 {b_count}、官方對照 {moe_count}")
-    if single_count:
-        print(f"  單字待確認 {single_count}（歧義多，不列入否決，自行看上下文）")
     print(f"  大陸構詞   {gram}")
     print(f"  AI 腔      {ai_count}")
     print(f"  （官方對照表載入 {len(MOE)} 條）")

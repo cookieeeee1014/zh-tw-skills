@@ -34,12 +34,15 @@ def test_moe_skips_same_form_terms():
     assert "鐵粉" not in MOE
 
 
-def test_single_char_moe_terms_are_downgraded():
-    """單字歧義（「米」可能是長度也可能是米飯）不能一票否決。"""
-    findings = scan("我吃了米飯，配玉米濃湯。")
-    kinds = {f["kind"] for f in findings}
-    assert "單字待確認" in kinds
-    assert "官方對照" not in kinds, "單字不該被當成確定錯誤"
+def test_single_char_moe_terms_are_not_reported():
+    """單字詞不做檢測。
+
+    中文沒有詞邊界，「米飯」的「米」和「3000 米」的「米」在字串層面
+    分不出來，任何一邊的判定都會錯。這 11 個字改由人看上下文。
+    """
+    findings = scan("我吃了米飯，配玉米濃湯。這條路有 3000 米長。")
+    single_hits = [f for f in findings if "單字" in f["kind"]]
+    assert single_hits == [], f"單字詞不該回報：{single_hits}"
 
 
 def test_multi_char_moe_terms_are_blocking():
@@ -236,3 +239,36 @@ def test_cli_clean_returns_zero():
         assert "A 級 0" in out.stdout
     finally:
         os.unlink(path)
+
+
+# ── --prompt：把檢測結果接上 PROMPT.md 的改寫規則 ──────────────
+
+def _run_prompt():
+    return subprocess.run(
+        [sys.executable, str(SCRIPT), "--prompt", str(SAMPLE_AI)],
+        capture_output=True, text=True, encoding="utf-8",
+    ).stdout
+
+
+def test_prompt_contains_source_and_rules():
+    text = _run_prompt()
+    for section in ("## 原文", "## 檢測結果", "## 改寫規則", "## 不要動的地方", "## 輸出"):
+        assert section in text, f"缺少 {section}"
+
+
+def test_prompt_carries_the_actual_findings():
+    """檢測到的具體錯誤要進到請求裡，模型才知道改哪裡。"""
+    text = _run_prompt()
+    assert "信息" in text
+    assert "資訊" in text
+    assert "第一優先" in text
+
+
+def test_prompt_orders_the_four_steps():
+    text = _run_prompt()
+    i1 = text.find("先清地區用詞")
+    i2 = text.find("再刪")
+    i3 = text.find("具體化")
+    i4 = text.find("最後調節奏")
+    assert -1 not in (i1, i2, i3, i4), "四步沒齊"
+    assert i1 < i2 < i3 < i4, "四步順序錯"
