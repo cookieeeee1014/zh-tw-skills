@@ -19,15 +19,3 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
-
----
-
-Note on bundled data:
-
-`tools/moe_cross_strait.json` is derived from the Appendix "兩岸常用詞語對照表"
-of the Concised Mandarin Chinese Dictionary (國語辭典簡編本), published by the
-Ministry of Education, Republic of China (Taiwan).
-Source: https://dict.concised.moe.edu.tw/appendix.jsp?ID=54
-
-The MIT license above covers the code in this repository. The dictionary data
-remains subject to its own terms as published by the Ministry of Education.
