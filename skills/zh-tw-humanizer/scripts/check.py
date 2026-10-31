@@ -103,6 +103,10 @@ TEMPLATE_ONE_LINE = [
     (r"在這個.{0,12}(時代|社會|環境)", "假深刻開場", "直接講事實"),
     (r"隨著.{0,20}的(發展|進步|普及)", "假深刻開場", "直接講事實"),
     (r"你是否(曾經|有過)", "反問開頭", "改陳述句"),
+    # 否定平行（維基 Negative parallelisms：單獨出現就是強信號）
+    (r"不是[^。！？]{0,30}[，,]\s*(?:而|反倒)?是", "否定平行", "直接講肯定的那半"),
+    (r"不(?:只|僅)(?:是)?[^。！？]{0,25}(?:而且|更是|也是)", "否定平行", "只留一層"),
+    (r"與其說[^。！？]{0,25}不如說", "否定平行", "直接下判斷"),
     (r"不僅(僅)?[^。]{0,30}(而且|更是)", "遞進強迫症", "只留一層"),
     (r"作為(一個|一名)?\s*(AI|人工智能|語言模型)", "假謙虛", "刪"),
     (r"我(理解|明白)(你|您)的(需求|意思)", "假謙虛", "直接給答案"),
@@ -190,9 +194,23 @@ def per_kilo(text, words):
     return total / max(len(text), 1) * 1000
 
 
+def strip_inline_code(s):
+    """移除行內程式碼與被引用的詞。
+
+    維基《Signs of AI writing》要求：被引用的、標題裡的、專名的一部分，
+    以及「討論某個詞」而非「使用某個詞」的段落，都不該判定。
+    引號與反引號都是「提到」的信號，不是「使用」。
+    """
+    s = re.sub(r"`[^`\n]*`", "", s)
+    s = re.sub(r"「[^」\n]{0,20}」", "", s)
+    s = re.sub(r"『[^』\n]{0,20}』", "", s)
+    return s
+
+
 def scan(text):
     findings = []
     lines = text.splitlines()
+    in_fence = False
 
     for pattern, kind in TEMPLATE_MULTILINE:
         for m in re.finditer(pattern, text):
@@ -202,7 +220,21 @@ def scan(text):
                 "found": m.group(0).splitlines()[0][:40], "suggest": "整句刪除優先",
             })
 
-    for lineno, line in enumerate(lines, 1):
+    for lineno, raw_line in enumerate(lines, 1):
+        # 跳過程式碼區塊
+        if raw_line.strip().startswith("```"):
+            in_fence = not in_fence
+            continue
+        if in_fence:
+            continue
+        # 跳過引用塊（引文不是作者的用詞）
+        if raw_line.lstrip().startswith(">"):
+            continue
+        # 跳過規則對照行（「信息→資訊」這類是在講規則，不是在使用）
+        if "→" in raw_line or "->" in raw_line:
+            continue
+
+        line = strip_inline_code(raw_line)
         for table, level in ((VOCAB_A, "A"), (VOCAB_B, "B")):
             for bad, good in table.items():
                 start = 0

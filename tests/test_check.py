@@ -102,6 +102,63 @@ def test_abstract_nouns():
     assert {"賦能", "閉環"} <= found
 
 
+# ── 否定平行（維基：單獨出現就是強信號）────────────────────
+
+def test_negative_parallelism():
+    findings = scan("這不是工具的問題，是流程的問題。")
+    kinds = [f["kind"] for f in findings]
+    assert "否定平行" in kinds
+
+
+def test_negative_parallelism_not_only():
+    findings = scan("這個做法不只省時間，更是省成本。")
+    kinds = [f["kind"] for f in findings]
+    assert "否定平行" in kinds
+
+
+def test_negative_parallelism_rather_than():
+    findings = scan("與其說這是技術問題，不如說是溝通問題。")
+    kinds = [f["kind"] for f in findings]
+    assert "否定平行" in kinds
+
+
+# ── 豁免：討論而非使用 ────────────────────────────────────
+
+def test_quoted_term_is_not_flagged():
+    """引號是「提到」的信號，不是「使用」。"""
+    findings = scan("OpenCC 把「信息」轉成繁體，結果還是「信息」。")
+    assert findings == [], f"引號內的詞不該判錯：{findings}"
+
+
+def test_backtick_term_is_not_flagged():
+    findings = scan("把 `信息` 改成 `資訊` 就好。")
+    assert findings == [], f"反引號內的詞不該判錯：{findings}"
+
+
+def test_mapping_line_is_skipped():
+    """規則對照行是在講規則，不是在使用。"""
+    findings = scan("信息→資訊、軟件→軟體、網絡→網路")
+    assert findings == [], f"對照行不該判錯：{findings}"
+
+
+def test_blockquote_is_skipped():
+    """引用別人的話不代表作者這樣寫。"""
+    findings = scan("> 這份信息需要優化，質量很重要。")
+    assert findings == [], f"引用塊不該判錯：{findings}"
+
+
+def test_code_fence_is_skipped():
+    findings = scan("```\n這份信息需要優化\n```\n")
+    assert findings == [], f"程式碼區塊不該判錯：{findings}"
+
+
+def test_real_usage_still_flagged():
+    """豁免不能把真問題也豁免掉。"""
+    findings = scan("這份信息需要優化，質量很重要。")
+    a_words = {f["found"] for f in findings if f["kind"].startswith("A 級")}
+    assert "信息" in a_words, "沒在引號裡的實際用詞仍要抓"
+
+
 # ── 節奏指標（核心）─────────────────────────────────────────
 
 def test_rhythm_separates_ai_from_human():
